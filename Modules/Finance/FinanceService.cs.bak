@@ -1,0 +1,298 @@
+using Microsoft.EntityFrameworkCore;
+
+namespace SecureERP2.Modules.Finance
+{
+    // 🏦 Finance Service - Business logic for finance operations
+    public interface IFinanceService
+    {
+        Task<FinanceAccount?> GetAccountAsync(int id);
+        Task<IEnumerable<FinanceAccount>> GetAccountsAsync();
+        Task<FinanceAccount> CreateAccountAsync(CreateFinanceAccountRequest request);
+        Task<Transaction?> GetTransactionAsync(int id);
+        Task<IEnumerable<Transaction>> GetTransactionsAsync(TransactionFilter filter);
+        Task<IEnumerable<LedgerEntry>> GetAccountLedgerAsync(int accountId, LedgerFilter filter);
+        Task<FinancialSummary> GetFinancialSummaryAsync();
+        Task<bool> ValidateAccountBalanceAsync(int accountId, decimal amount);
+    }
+
+    public class FinanceService : IFinanceService
+    {
+        private readonly ERPDbContext _context;
+        private readonly ILogger<FinanceService> _logger;
+
+        public FinanceService(ERPDbContext context, ILogger<FinanceService> logger)
+        {
+            _context = context;
+            _logger = logger;
+        }
+
+        public async Task<FinanceAccount?> GetAccountAsync(int id)
+        {
+            try
+            {
+                return await _context.FinanceAccounts
+                    .Include(a => a.Transactions)
+                    .Include(a => a.LedgerEntries)
+                    .FirstOrDefaultAsync(a => a.Id == id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving account {AccountId}", id);
+                throw;
+            }
+        }
+
+        public async Task<IEnumerable<FinanceAccount>> GetAccountsAsync()
+        {
+            try
+            {
+                return await _context.FinanceAccounts
+                    .Include(a => a.Transactions)
+                    .OrderBy(a => a.AccountCode)
+                    .ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving accounts");
+                throw;
+            }
+        }
+
+        public async Task<FinanceAccount> CreateAccountAsync(CreateFinanceAccountRequest request)
+        {
+            try
+            {
+                // Validate account code uniqueness
+                var existingAccount = await _context.FinanceAccounts
+                    .FirstOrDefaultAsync(a => a.AccountCode == request.AccountCode);
+
+                if (existingAccount != null)
+                {
+                    throw new InvalidOperationException("Account code already exists");
+                }
+
+                var account = new FinanceAccount
+                {
+                    AccountCode = request.AccountCode,
+                    AccountName = request.AccountName,
+                    Description = request.Description,
+                    AccountType = request.AccountType,
+                    AccountCategory = request.AccountCategory,
+                    OpeningBalance = request.OpeningBalance,
+                    CurrentBalance = request.OpeningBalance,
+                    CurrencyCode = request.CurrencyCode,
+                    IsActive = true
+                };
+
+                _context.FinanceAccounts.Add(account);
+                await _context.SaveChangesAsync();
+
+                // Create opening balance ledger entry if needed
+                if (request.OpeningBalance != 0)
+                {
+                    await CreateOpeningBalanceEntryAsync(account, request.OpeningBalance);
+                }
+
+                return account;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating account");
+                throw;
+            }
+        }
+
+        private async Task CreateOpeningBalanceEntryAsync(FinanceAccount account, decimal openingBalance)
+        {
+            try
+            {
+                var ledgerEntry = new LedgerEntry
+                {
+                    EntryNumber = $"OB-{account.AccountCode}-{DateTime.UtcNow:yyyyMMdd}",
+                    EntryDate = DateTime.UtcNow,
+                    EntryType = LedgerEntryType.OpeningBalance,
+                    DebitAmount = openingBalance > 0 ? openingBalance : 0,
+                    CreditAmount = openingBalance < 0 ? Math.Abs(openingBalance) : 0,
+                    Balance = openingBalance,
+                    Description = "Opening balance",
+                    AccountId = account.Id,
+                    TransactionId = 0, // Opening balance doesn't have a transaction
+                    CreatedByUserId = 1, // TODO: Get from current user
+                    IsReconciled = true,
+                    ReconciledDate = DateTime.UtcNow,
+                    ReconciledByUserId = 1
+                };
+
+                _context.LedgerEntries.Add(ledgerEntry);
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating opening balance entry for account {AccountId}", account.Id);
+                throw;
+            }
+        }
+
+        public async Task<Transaction?> GetTransactionAsync(int id)
+        {
+            try
+            {
+                return await _context.Transactions
+                    .Include(t => t.LedgerEntries)
+                        .ThenInclude(le => le.Account)
+                    .Include(t => t.CreatedByUser)
+                    .Include(t => t.ApprovedByUser)
+                    .FirstOrDefaultAsync(t => t.Id == id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving transaction {TransactionId}", id);
+                throw;
+            }
+        }
+
+        public async Task<IEnumerable<Transaction>> GetTransactionsAsync(TransactionFilter filter)
+        {
+            try
+            {
+                var query = _context.Transactions
+                    .Include(t => t.LedgerEntries)
+                    .Include(t => t.CreatedByUser)
+                    .Include(t => t.ApprovedByUser)
+                    .AsQueryable();
+
+                if (filter.StartDate.HasValue)
+                {
+                    query = query.Where(t => t.TransactionDate >= filter.StartDate.Value);
+                }
+
+                if (filter.EndDate.HasValue)
+                {
+                    query = query.Where(t => t.TransactionDate <= filter.EndDate.Value);
+                }
+
+                if (filter.TransactionType.HasValue)
+                {
+                    query = query.Where(t => t.TransactionType == filter.TransactionType.Value);
+                }
+
+                if (filter.TransactionStatus.HasValue)
+                {
+                    query = query.Where(t => t.TransactionStatus == filter.TransactionStatus.Value);
+                }
+
+                return await query
+                    .OrderByDescending(t => t.TransactionDate)
+                    .ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving transactions");
+                throw;
+            }
+        }
+
+        public async Task<IEnumerable<LedgerEntry>> GetAccountLedgerAsync(int accountId, LedgerFilter filter)
+        {
+            try
+            {
+                // Verify account exists
+                var account = await _context.FinanceAccounts.FindAsync(accountId);
+                if (account == null)
+                {
+                    throw new ArgumentException("Account not found");
+                }
+
+                var query = _context.LedgerEntries
+                    .Include(le => le.Transaction)
+                    .Include(le => le.CreatedByUser)
+                    .Where(le => le.AccountId == accountId)
+                    .AsQueryable();
+
+                if (filter.StartDate.HasValue)
+                {
+                    query = query.Where(le => le.EntryDate >= filter.StartDate.Value);
+                }
+
+                if (filter.EndDate.HasValue)
+                {
+                    query = query.Where(le => le.EntryDate <= filter.EndDate.Value);
+                }
+
+                if (filter.EntryType.HasValue)
+                {
+                    query = query.Where(le => le.EntryType == filter.EntryType.Value);
+                }
+
+                if (filter.IsReconciled.HasValue)
+                {
+                    query = query.Where(le => le.IsReconciled == filter.IsReconciled.Value);
+                }
+
+                return await query
+                    .OrderBy(le => le.EntryDate)
+                    .ThenBy(le => le.EntryNumber)
+                    .ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving ledger entries for account {AccountId}", accountId);
+                throw;
+            }
+        }
+
+        public async Task<FinancialSummary> GetFinancialSummaryAsync()
+        {
+            try
+            {
+                var accounts = await _context.FinanceAccounts.ToListAsync();
+                
+                var summary = new FinancialSummary
+                {
+                    TotalAssets = accounts.Where(a => a.AccountType == AccountType.Asset).Sum(a => a.CurrentBalance),
+                    TotalLiabilities = accounts.Where(a => a.AccountType == AccountType.Liability).Sum(a => a.CurrentBalance),
+                    TotalEquity = accounts.Where(a => a.AccountType == AccountType.Equity).Sum(a => a.CurrentBalance),
+                    TotalRevenue = accounts.Where(a => a.AccountType == AccountType.Revenue).Sum(a => a.CurrentBalance),
+                    TotalExpenses = accounts.Where(a => a.AccountType == AccountType.Expense).Sum(a => a.CurrentBalance),
+                    NetIncome = 0,
+                    AccountCount = accounts.Count,
+                    LastUpdated = DateTime.UtcNow
+                };
+
+                summary.NetIncome = summary.TotalRevenue - summary.TotalExpenses;
+
+                return summary;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error generating financial summary");
+                throw;
+            }
+        }
+
+        public async Task<bool> ValidateAccountBalanceAsync(int accountId, decimal amount)
+        {
+            try
+            {
+                var account = await _context.FinanceAccounts.FindAsync(accountId);
+                if (account == null)
+                {
+                    return false;
+                }
+
+                // For asset accounts, ensure balance doesn't go negative
+                if (account.AccountType == AccountType.Asset && account.CurrentBalance + amount < 0)
+                {
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error validating account balance for account {AccountId}", accountId);
+                throw;
+            }
+        }
+    }
+}

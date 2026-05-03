@@ -1,0 +1,761 @@
+using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
+using System.Text;
+using System.Linq;
+
+namespace SecureERP2
+{
+    // Data access service for ERP operations
+    public class ERPDataService
+    {
+        private readonly ERPDbContext _context;
+        private readonly ILogger<ERPDataService> _logger;
+
+        public ERPDataService(ERPDbContext context, ILogger<ERPDataService> logger)
+        {
+            _context = context;
+            _logger = logger;
+        }
+
+        // Initialize database with seed data (enhanced)
+        public async Task InitializeDatabaseAsync()
+        {
+            try
+            {
+                // Create database if it doesn't exist
+                await _context.Database.EnsureCreatedAsync();
+
+                // Check if data already exists
+                if (await _context.Roles.AnyAsync())
+                {
+                    _logger.LogInformation("Database already initialized");
+                    return;
+                }
+
+                // Seed initial data in correct order
+                await SeedRolesAsync();
+                await SeedRolePermissionsAsync();
+                await SeedUsersAsync();
+                await SeedFinanceAccountsAsync();
+                await SeedProductsAsync();
+                await SeedInventoryAsync();
+                await SeedOrdersAsync();
+                await SeedTransactionsAsync();
+                await SeedAnalyticsAsync();
+
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("Enhanced database initialized successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error initializing database");
+                throw;
+            }
+        }
+
+        // Authentication methods (enhanced)
+        public async Task<User?> AuthenticateUserAsync(string username, string password)
+        {
+            var user = await _context.Users
+                .Include(u => u.Role)
+                .FirstOrDefaultAsync(u => u.Username == username && u.IsActive);
+
+            if (user == null) return null;
+
+            // Verify password (simple hash for demo - in production use proper password hashing)
+            var hashedPassword = HashPassword(password);
+            if (user.PasswordHash == hashedPassword)
+            {
+                // Update last login
+                user.LastLoginAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+                return user;
+            }
+
+            return null;
+        }
+
+        // Get user by username (for token validation)
+        public async Task<User?> GetUserByUsernameAsync(string username)
+        {
+            return await _context.Users
+                .Include(u => u.Role)
+                .FirstOrDefaultAsync(u => u.Username == username && u.IsActive);
+        }
+
+        // Get user permissions (combines role and user-specific permissions)
+        public async Task<Dictionary<string, string>> GetUserPermissionsAsync(int userId)
+        {
+            var permissions = new Dictionary<string, string>();
+
+            // Get role permissions
+            var user = await _context.Users
+                .Include(u => u.Role)
+                .ThenInclude(r => r.RolePermissions)
+                .FirstOrDefaultAsync(u => u.Id == userId && u.IsActive);
+
+            if (user?.Role != null)
+            {
+                foreach (var rolePerm in user.Role.RolePermissions)
+                {
+                    permissions[rolePerm.PermissionName] = rolePerm.PermissionValue;
+                }
+            }
+
+            // Get user-specific permission overrides
+            var userPerms = await _context.UserPermissions
+                .Where(up => up.UserId == userId)
+                .ToListAsync();
+
+            foreach (var userPerm in userPerms)
+            {
+                permissions[userPerm.PermissionName] = userPerm.PermissionValue;
+            }
+
+            return permissions;
+        }
+
+        // Check if user has specific permission
+        public async Task<bool> HasPermissionAsync(int userId, string permissionName)
+        {
+            var permissions = await GetUserPermissionsAsync(userId);
+            return permissions.TryGetValue(permissionName, out var value) && value == "true";
+        }
+
+        // Get all roles
+        public async Task<List<Role>> GetRolesAsync()
+        {
+            return await _context.Roles
+                .Where(r => r.IsActive)
+                .Include(r => r.RolePermissions)
+                .OrderBy(r => r.RoleName)
+                .ToListAsync();
+        }
+
+        // Get role by ID
+        public async Task<Role?> GetRoleByIdAsync(int roleId)
+        {
+            return await _context.Roles
+                .Include(r => r.RolePermissions)
+                .FirstOrDefaultAsync(r => r.Id == roleId);
+        }
+
+        // Create user session
+        public async Task<UserSession> CreateUserSessionAsync(int userId, string sessionToken, DateTime expiresAt, string? ipAddress = null, string? userAgent = null)
+        {
+            var session = new UserSession
+            {
+                UserId = userId,
+                SessionToken = sessionToken,
+                ExpiresAt = expiresAt,
+                IPAddress = ipAddress,
+                UserAgent = userAgent,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.UserSessions.Add(session);
+            await _context.SaveChangesAsync();
+
+            return session;
+        }
+
+        // Validate session
+        public async Task<UserSession?> ValidateSessionAsync(string sessionToken)
+        {
+            var session = await _context.UserSessions
+                .Include(s => s.User)
+                .ThenInclude(u => u.Role)
+                .FirstOrDefaultAsync(s => s.SessionToken == sessionToken && s.IsActive && s.ExpiresAt > DateTime.UtcNow);
+
+            return session;
+        }
+
+        // Revoke session
+        public async Task<bool> RevokeSessionAsync(string sessionToken)
+        {
+            var session = await _context.UserSessions
+                .FirstOrDefaultAsync(s => s.SessionToken == sessionToken);
+
+            if (session == null) return false;
+
+            session.IsActive = false;
+            await _context.SaveChangesAsync();
+
+            return true;
+        }
+
+        // Cleanup expired sessions
+        public async Task CleanupExpiredSessionsAsync()
+        {
+            var expiredSessions = await _context.UserSessions
+                .Where(s => s.ExpiresAt < DateTime.UtcNow)
+                .ToListAsync();
+
+            _context.UserSessions.RemoveRange(expiredSessions);
+            await _context.SaveChangesAsync();
+        }
+
+        // Dashboard data methods
+        public async Task<Dictionary<string, object>> GetDashboardMetricsAsync()
+        {
+            var metrics = new Dictionary<string, object>();
+
+            // Financial metrics
+            var totalRevenue = await _context.Transactions
+                .Where(t => t.TransactionType == "Sale" && t.CreditAmount > 0)
+                .SumAsync(t => t.CreditAmount);
+
+            var totalExpenses = await _context.Transactions
+                .Where(t => t.TransactionType == "Purchase" && t.DebitAmount > 0)
+                .SumAsync(t => t.DebitAmount);
+
+            var inventoryValue = await _context.Inventory
+                .Join(_context.Products, i => i.ProductId, p => p.Id, (i, p) => new { i.Quantity, p.UnitPrice })
+                .SumAsync(x => x.Quantity * x.UnitPrice);
+
+            var activeOrders = await _context.Orders
+                .CountAsync(o => o.Status == "Pending" || o.Status == "Confirmed");
+
+            // Add metrics to dictionary
+            metrics["TotalRevenue"] = totalRevenue;
+            metrics["TotalExpenses"] = totalExpenses;
+            metrics["Profit"] = totalRevenue - totalExpenses;
+            metrics["InventoryValue"] = inventoryValue;
+            metrics["ActiveOrders"] = activeOrders;
+            metrics["PendingApprovals"] = 5; // Placeholder
+
+            return metrics;
+        }
+
+        // Finance data methods
+        public async Task<List<FinanceAccount>> GetFinanceAccountsAsync()
+        {
+            return await _context.FinanceAccounts
+                .Where(a => a.IsActive)
+                .OrderBy(a => a.AccountType)
+                .ThenBy(a => a.AccountName)
+                .ToListAsync();
+        }
+
+        public async Task<List<Transaction>> GetRecentTransactionsAsync(int count = 50)
+        {
+            return await _context.Transactions
+                .Include(t => t.Account)
+                .OrderByDescending(t => t.TransactionDate)
+                .Take(count)
+                .ToListAsync();
+        }
+
+        // Inventory data methods
+        public async Task<List<Product>> GetProductsAsync()
+        {
+            return await _context.Products
+                .Where(p => p.IsActive)
+                .OrderBy(p => p.Category)
+                .ThenBy(p => p.ProductName)
+                .ToListAsync();
+        }
+
+        public async Task<List<Inventory>> GetInventoryAsync()
+        {
+            return await _context.Inventory
+                .Include(i => i.Product)
+                .OrderBy(i => i.Location)
+                .ThenBy(i => i.Product!.ProductName)
+                .ToListAsync();
+        }
+
+        // Sales data methods
+        public async Task<List<Order>> GetSalesOrdersAsync()
+        {
+            return await _context.Orders
+                .Where(o => o.OrderType == "Sales")
+                .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.Product)
+                .Include(o => o.Creator)
+                .OrderByDescending(o => o.OrderDate)
+                .ToListAsync();
+        }
+
+        public async Task<List<Order>> GetPurchaseOrdersAsync()
+        {
+            return await _context.Orders
+                .Where(o => o.OrderType == "Purchase")
+                .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.Product)
+                .Include(o => o.Creator)
+                .OrderByDescending(o => o.OrderDate)
+                .ToListAsync();
+        }
+
+        // User management methods (enhanced)
+        public async Task<List<User>> GetUsersAsync()
+        {
+            return await _context.Users
+                .Where(u => u.IsActive)
+                .Include(u => u.Role)
+                .OrderBy(u => u.Role.RoleName)
+                .ThenBy(u => u.Username)
+                .ToListAsync();
+        }
+
+        // Analytics methods
+        public async Task<List<AnalyticsSummary>> GetAnalyticsAsync(DateOnly? fromDate = null, DateOnly? toDate = null)
+        {
+            var query = _context.AnalyticsSummaries.AsQueryable();
+
+            if (fromDate.HasValue)
+                query = query.Where(a => a.MetricDate >= fromDate.Value);
+
+            if (toDate.HasValue)
+                query = query.Where(a => a.MetricDate <= toDate.Value);
+
+            return await query
+                .OrderByDescending(a => a.MetricDate)
+                .ThenBy(a => a.Category)
+                .ThenBy(a => a.MetricName)
+                .ToListAsync();
+        }
+
+        // Private helper methods (enhanced for new schema)
+        private async Task SeedRolesAsync()
+        {
+            var roles = new List<Role>
+            {
+                new Role 
+                { 
+                    RoleName = "Admin", 
+                    Description = "Full system access with all permissions",
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new Role 
+                { 
+                    RoleName = "Finance", 
+                    Description = "Access to financial modules and reports",
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new Role 
+                { 
+                    RoleName = "Warehouse", 
+                    Description = "Access to inventory and procurement modules",
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new Role 
+                { 
+                    RoleName = "Sales", 
+                    Description = "Access to sales and customer management modules",
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                }
+            };
+
+            await _context.Roles.AddRangeAsync(roles);
+        }
+
+        private async Task SeedRolePermissionsAsync()
+        {
+            var permissions = new List<RolePermission>
+            {
+                // Admin permissions (RoleId = 1)
+                new RolePermission { RoleId = 1, PermissionName = "canManageUsers", PermissionValue = "true", Description = "Can create, edit, and delete users", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canManageRoles", PermissionValue = "true", Description = "Can manage roles and permissions", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canAccessSettings", PermissionValue = "true", Description = "Can access system settings", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canAccessDatabase", PermissionValue = "true", Description = "Can access database maintenance", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canBackupData", PermissionValue = "true", Description = "Can backup and restore data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canExportAll", PermissionValue = "true", Description = "Can export all types of data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canAccessAllModules", PermissionValue = "true", Description = "Can access all system modules", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canViewSystemInfo", PermissionValue = "true", Description = "Can view system information", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canAccessFinance", PermissionValue = "true", Description = "Can access finance module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canAccessWarehouse", PermissionValue = "true", Description = "Can access warehouse module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canAccessProcurement", PermissionValue = "true", Description = "Can access procurement module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canAccessSales", PermissionValue = "true", Description = "Can access sales module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canViewAnalytics", PermissionValue = "true", Description = "Can view analytics and reports", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canExportFinance", PermissionValue = "true", Description = "Can export financial data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canExportInventory", PermissionValue = "true", Description = "Can export inventory data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 1, PermissionName = "canExportSales", PermissionValue = "true", Description = "Can export sales data", CreatedAt = DateTime.UtcNow },
+
+                // Finance permissions (RoleId = 2)
+                new RolePermission { RoleId = 2, PermissionName = "canManageUsers", PermissionValue = "false", Description = "Can create, edit, and delete users", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canManageRoles", PermissionValue = "false", Description = "Can manage roles and permissions", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canAccessSettings", PermissionValue = "false", Description = "Can access system settings", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canAccessDatabase", PermissionValue = "false", Description = "Can access database maintenance", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canBackupData", PermissionValue = "false", Description = "Can backup and restore data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canExportAll", PermissionValue = "true", Description = "Can export all types of data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canAccessAllModules", PermissionValue = "false", Description = "Can access all system modules", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canViewSystemInfo", PermissionValue = "false", Description = "Can view system information", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canAccessFinance", PermissionValue = "true", Description = "Can access finance module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canAccessWarehouse", PermissionValue = "false", Description = "Can access warehouse module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canAccessProcurement", PermissionValue = "false", Description = "Can access procurement module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canAccessSales", PermissionValue = "false", Description = "Can access sales module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canViewAnalytics", PermissionValue = "true", Description = "Can view analytics and reports", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canExportFinance", PermissionValue = "true", Description = "Can export financial data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canExportInventory", PermissionValue = "false", Description = "Can export inventory data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 2, PermissionName = "canExportSales", PermissionValue = "false", Description = "Can export sales data", CreatedAt = DateTime.UtcNow },
+
+                // Warehouse permissions (RoleId = 3)
+                new RolePermission { RoleId = 3, PermissionName = "canManageUsers", PermissionValue = "false", Description = "Can create, edit, and delete users", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canManageRoles", PermissionValue = "false", Description = "Can manage roles and permissions", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canAccessSettings", PermissionValue = "false", Description = "Can access system settings", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canAccessDatabase", PermissionValue = "false", Description = "Can access database maintenance", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canBackupData", PermissionValue = "false", Description = "Can backup and restore data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canExportAll", PermissionValue = "false", Description = "Can export all types of data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canAccessAllModules", PermissionValue = "false", Description = "Can access all system modules", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canViewSystemInfo", PermissionValue = "false", Description = "Can view system information", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canAccessFinance", PermissionValue = "false", Description = "Can access finance module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canAccessWarehouse", PermissionValue = "true", Description = "Can access warehouse module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canAccessProcurement", PermissionValue = "true", Description = "Can access procurement module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canAccessSales", PermissionValue = "false", Description = "Can access sales module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canViewAnalytics", PermissionValue = "false", Description = "Can view analytics and reports", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canExportFinance", PermissionValue = "false", Description = "Can export financial data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canExportInventory", PermissionValue = "true", Description = "Can export inventory data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 3, PermissionName = "canExportSales", PermissionValue = "false", Description = "Can export sales data", CreatedAt = DateTime.UtcNow },
+
+                // Sales permissions (RoleId = 4)
+                new RolePermission { RoleId = 4, PermissionName = "canManageUsers", PermissionValue = "false", Description = "Can create, edit, and delete users", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canManageRoles", PermissionValue = "false", Description = "Can manage roles and permissions", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canAccessSettings", PermissionValue = "false", Description = "Can access system settings", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canAccessDatabase", PermissionValue = "false", Description = "Can access database maintenance", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canBackupData", PermissionValue = "false", Description = "Can backup and restore data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canExportAll", PermissionValue = "false", Description = "Can export all types of data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canAccessAllModules", PermissionValue = "false", Description = "Can access all system modules", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canViewSystemInfo", PermissionValue = "false", Description = "Can view system information", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canAccessFinance", PermissionValue = "false", Description = "Can access finance module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canAccessWarehouse", PermissionValue = "false", Description = "Can access warehouse module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canAccessProcurement", PermissionValue = "false", Description = "Can access procurement module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canAccessSales", PermissionValue = "true", Description = "Can access sales module", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canViewAnalytics", PermissionValue = "true", Description = "Can view analytics and reports", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canExportFinance", PermissionValue = "false", Description = "Can export financial data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canExportInventory", PermissionValue = "false", Description = "Can export inventory data", CreatedAt = DateTime.UtcNow },
+                new RolePermission { RoleId = 4, PermissionName = "canExportSales", PermissionValue = "true", Description = "Can export sales data", CreatedAt = DateTime.UtcNow }
+            };
+
+            await _context.RolePermissions.AddRangeAsync(permissions);
+        }
+
+        private async Task SeedUsersAsync()
+        {
+            var users = new List<User>
+            {
+                new User 
+                { 
+                    Username = "admin", 
+                    PasswordHash = HashPassword("Admin123!"), 
+                    Email = "admin@erpsystem.com", 
+                    RoleId = 1, // Admin role
+                    FirstName = "ERP", 
+                    LastName = "System",
+                    Department = "IT",
+                    IsActive = true,
+                    PasswordChangedAt = DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new User 
+                { 
+                    Username = "finance_manager", 
+                    PasswordHash = HashPassword("Finance123!"), 
+                    Email = "finance@erpsystem.com", 
+                    RoleId = 2, // Finance role
+                    FirstName = "Finance", 
+                    LastName = "Manager",
+                    Department = "Finance",
+                    IsActive = true,
+                    PasswordChangedAt = DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new User 
+                { 
+                    Username = "warehouse_manager", 
+                    PasswordHash = HashPassword("Warehouse123!"), 
+                    Email = "warehouse@erpsystem.com", 
+                    RoleId = 3, // Warehouse role
+                    FirstName = "Warehouse", 
+                    LastName = "Manager",
+                    Department = "Warehouse",
+                    IsActive = true,
+                    PasswordChangedAt = DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new User 
+                { 
+                    Username = "sales_manager", 
+                    PasswordHash = HashPassword("Sales123!"), 
+                    Email = "sales@erpsystem.com", 
+                    RoleId = 4, // Sales role
+                    FirstName = "Sales", 
+                    LastName = "Manager",
+                    Department = "Sales",
+                    IsActive = true,
+                    PasswordChangedAt = DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                }
+            };
+
+            await _context.Users.AddRangeAsync(users);
+        }
+
+        private async Task SeedFinanceAccountsAsync()
+        {
+            var accounts = new List<FinanceAccount>
+            {
+                new FinanceAccount 
+                { 
+                    AccountName = "Cash", 
+                    AccountType = "Asset", 
+                    AccountCode = "1001", 
+                    Balance = 30000.00m,
+                    Description = "Cash on hand",
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new FinanceAccount 
+                { 
+                    AccountName = "Accounts Receivable", 
+                    AccountType = "Asset", 
+                    AccountCode = "1002", 
+                    Balance = 25000.00m,
+                    Description = "Money owed by customers",
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new FinanceAccount 
+                { 
+                    AccountName = "Inventory", 
+                    AccountType = "Asset", 
+                    AccountCode = "1003", 
+                    Balance = 75000.00m,
+                    Description = "Inventory value",
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new FinanceAccount 
+                { 
+                    AccountName = "Sales Revenue", 
+                    AccountType = "Revenue", 
+                    AccountCode = "4001", 
+                    Balance = 0.00m,
+                    Description = "Sales income",
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new FinanceAccount 
+                { 
+                    AccountName = "Cost of Goods Sold", 
+                    AccountType = "Expense", 
+                    AccountCode = "5001", 
+                    Balance = 0.00m,
+                    Description = "Cost of inventory sold",
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                }
+            };
+
+            await _context.FinanceAccounts.AddRangeAsync(accounts);
+        }
+
+        private async Task SeedProductsAsync()
+        {
+            var products = new List<Product>
+            {
+                new Product 
+                { 
+                    ProductCode = "LP001", 
+                    ProductName = "Laptop Pro 15\"", 
+                    Description = "High-performance laptop with 15\" display", 
+                    Category = "Electronics", 
+                    UnitPrice = 1200.00m, 
+                    CostPrice = 800.00m,
+                    ReorderLevel = 10,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new Product 
+                { 
+                    ProductCode = "OC001", 
+                    ProductName = "Office Chair", 
+                    Description = "Ergonomic office chair", 
+                    Category = "Furniture", 
+                    UnitPrice = 250.00m, 
+                    CostPrice = 150.00m,
+                    ReorderLevel = 20,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new Product 
+                { 
+                    ProductCode = "DP001", 
+                    ProductName = "Desk Phone", 
+                    Description = "Digital desk phone system", 
+                    Category = "Office Supplies", 
+                    UnitPrice = 80.00m, 
+                    CostPrice = 50.00m,
+                    ReorderLevel = 30,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new Product 
+                { 
+                    ProductCode = "MN001", 
+                    ProductName = "Monitor 24\"", 
+                    Description = "24-inch LED monitor", 
+                    Category = "Electronics", 
+                    UnitPrice = 300.00m, 
+                    CostPrice = 200.00m,
+                    ReorderLevel = 15,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                }
+            };
+
+            await _context.Products.AddRangeAsync(products);
+        }
+
+        private async Task SeedInventoryAsync()
+        {
+            var inventory = new List<Inventory>
+            {
+                new Inventory { ProductId = 1, Quantity = 25, Location = "Warehouse A", LastUpdated = DateTime.UtcNow },
+                new Inventory { ProductId = 2, Quantity = 50, Location = "Warehouse B", LastUpdated = DateTime.UtcNow },
+                new Inventory { ProductId = 3, Quantity = 100, Location = "Warehouse A", LastUpdated = DateTime.UtcNow },
+                new Inventory { ProductId = 4, Quantity = 40, Location = "Warehouse B", LastUpdated = DateTime.UtcNow }
+            };
+
+            await _context.Inventory.AddRangeAsync(inventory);
+        }
+
+        private async Task SeedOrdersAsync()
+        {
+            var orders = new List<Order>
+            {
+                new Order 
+                { 
+                    OrderNumber = "SO-001", 
+                    OrderType = "Sales", 
+                    CustomerId = 1, 
+                    OrderDate = DateTime.UtcNow.AddDays(-5), 
+                    ExpectedDate = DateTime.UtcNow.AddDays(5), 
+                    Status = "Confirmed", 
+                    TotalAmount = 15000.00m, 
+                    Notes = "Bulk order for ABC Corporation",
+                    CreatedAt = DateTime.UtcNow.AddDays(-5),
+                    UpdatedAt = DateTime.UtcNow.AddDays(-5)
+                },
+                new Order 
+                { 
+                    OrderNumber = "PO-001", 
+                    OrderType = "Purchase", 
+                    SupplierId = 1, 
+                    OrderDate = DateTime.UtcNow.AddDays(-3), 
+                    ExpectedDate = DateTime.UtcNow.AddDays(10), 
+                    Status = "Pending", 
+                    TotalAmount = 12000.00m, 
+                    Notes = "Purchase from Tech Supplier Inc",
+                    CreatedAt = DateTime.UtcNow.AddDays(-3),
+                    UpdatedAt = DateTime.UtcNow.AddDays(-3)
+                }
+            };
+
+            await _context.Orders.AddRangeAsync(orders);
+        }
+
+        private async Task SeedTransactionsAsync()
+        {
+            var transactions = new List<Transaction>
+            {
+                new Transaction 
+                { 
+                    TransactionNumber = "TXN-001", 
+                    TransactionDate = DateTime.UtcNow.AddDays(-5), 
+                    TransactionType = "Sale", 
+                    AccountId = 1, 
+                    Description = "Cash sale from SO-001", 
+                    DebitAmount = 15000.00m, 
+                    CreditAmount = 0.00m,
+                    CreatedAt = DateTime.UtcNow.AddDays(-5)
+                },
+                new Transaction 
+                { 
+                    TransactionNumber = "TXN-002", 
+                    TransactionDate = DateTime.UtcNow.AddDays(-5), 
+                    TransactionType = "Sale", 
+                    AccountId = 2, 
+                    Description = "Accounts receivable from SO-001", 
+                    DebitAmount = 0.00m, 
+                    CreditAmount = 15000.00m,
+                    CreatedAt = DateTime.UtcNow.AddDays(-5)
+                }
+            };
+
+            await _context.Transactions.AddRangeAsync(transactions);
+        }
+
+        private async Task SeedAnalyticsAsync()
+        {
+            var analytics = new List<AnalyticsSummary>
+            {
+                new AnalyticsSummary 
+                { 
+                    MetricName = "Total Revenue", 
+                    MetricValue = 125000.00m, 
+                    MetricDate = DateOnly.FromDateTime(DateTime.UtcNow), 
+                    Category = "Finance",
+                    CreatedAt = DateTime.UtcNow
+                },
+                new AnalyticsSummary 
+                { 
+                    MetricName = "Total Expenses", 
+                    MetricValue = 45000.00m, 
+                    MetricDate = DateOnly.FromDateTime(DateTime.UtcNow), 
+                    Category = "Finance",
+                    CreatedAt = DateTime.UtcNow
+                },
+                new AnalyticsSummary 
+                { 
+                    MetricName = "Net Profit", 
+                    MetricValue = 80000.00m, 
+                    MetricDate = DateOnly.FromDateTime(DateTime.UtcNow), 
+                    Category = "Finance",
+                    CreatedAt = DateTime.UtcNow
+                },
+                new AnalyticsSummary 
+                { 
+                    MetricName = "Total Orders", 
+                    MetricValue = 156, 
+                    MetricDate = DateOnly.FromDateTime(DateTime.UtcNow), 
+                    Category = "Sales",
+                    CreatedAt = DateTime.UtcNow
+                },
+                new AnalyticsSummary 
+                { 
+                    MetricName = "Inventory Value", 
+                    MetricValue = 75000.00m, 
+                    MetricDate = DateOnly.FromDateTime(DateTime.UtcNow), 
+                    Category = "Inventory",
+                    CreatedAt = DateTime.UtcNow
+                }
+            };
+
+            await _context.AnalyticsSummaries.AddRangeAsync(analytics);
+        }
+
+        private string HashPassword(string password)
+        {
+            // Simple hash for demo - in production use proper password hashing like BCrypt
+            using var sha = SHA256.Create();
+            var bytes = Encoding.UTF8.GetBytes(password);
+            var hash = sha.ComputeHash(bytes);
+            return Convert.ToBase64String(hash);
+        }
+    }
+}
