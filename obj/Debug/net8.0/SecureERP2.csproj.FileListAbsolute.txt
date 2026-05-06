@@ -6,3 +6,4 @@ C:\Users\Public\ERP_SYSTEM\working-api\SecureERP2\obj\Debug\net8.0\SecureERP2.As
 C:\Users\Public\ERP_SYSTEM\working-api\SecureERP2\obj\Debug\net8.0\SecureERP2.csproj.CoreCompileInputs.cache
 C:\Users\Public\ERP_SYSTEM\working-api\SecureERP2\obj\Debug\net8.0\SecureERP2.MvcApplicationPartsAssemblyInfo.cs
 C:\Users\Public\ERP_SYSTEM\working-api\SecureERP2\obj\Debug\net8.0\SecureERP2.MvcApplicationPartsAssemblyInfo.cache
+C:\Users\Public\ERP_SYSTEM\working-api\SecureERP2\obj\Debug\net8.0\SecureERP2.sourcelink.json

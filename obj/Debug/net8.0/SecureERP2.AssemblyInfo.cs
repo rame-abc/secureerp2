@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("SecureERP2")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+f0c431ce71111fb515c08aa80c28278efe9ec236")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2b707eb9e3a99633ca69d1f678ccea2806bae4c0")]
 [assembly: System.Reflection.AssemblyProductAttribute("SecureERP2")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SecureERP2")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
