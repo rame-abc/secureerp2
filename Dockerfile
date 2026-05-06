@@ -1,8 +1,7 @@
-# 🚀 STEP 25.4: Prepare Deployment - Docker Configuration
+# 🚀 SECUREERP2 PRODUCTION DOCKERFILE - RENDER DEPLOYMENT
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
 WORKDIR /app
-EXPOSE 8080
-EXPOSE 8081
+EXPOSE 10000
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
