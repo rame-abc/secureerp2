@@ -814,27 +814,7 @@ namespace SecureERP2.Modules.Finance.Services
         public string Jurisdiction { get; set; } = string.Empty;
     }
 
-    public class AssetRegisterReconciliationResult : ReconciliationBase
-    {
-        public int CompanyId { get; set; }
-        public DateTime AsOfDate { get; set; }
-        public string ErrorMessage { get; set; } = string.Empty;
-        public ReconciliationStatus OverallStatus { get; set; }
-        public List<CategoryComparison> CategoryComparisons { get; set; } = new();
-        public decimal TotalDifferences { get; set; }
-        public List<SuspiciousMismatch> SuspiciousMismatches { get; set; } = new();
-    }
-
-    public class PayrollExpenseReconciliationResult : ReconciliationBase
-    {
-        public int CompanyId { get; set; }
-        public DateTime AsOfDate { get; set; }
-        public string ErrorMessage { get; set; } = string.Empty;
-        public ReconciliationStatus OverallStatus { get; set; }
-        public decimal TotalDifferences { get; set; }
-        public List<SuspiciousMismatch> SuspiciousMismatches { get; set; } = new();
-    }
-
+    
     public class SuspiciousMismatch
     {
         public string Type { get; set; } = string.Empty;
