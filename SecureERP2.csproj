@@ -24,4 +24,9 @@
     <Compile Remove="Modules\Finance\Services\PeriodClosingEngine.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="Tests\**\*.cs" />
+    <None Remove="Tests\**\*" />
+  </ItemGroup>
+
 </Project>

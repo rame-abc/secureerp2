@@ -571,24 +571,7 @@ namespace SecureERP2.Modules.Finance.Services
         public List<string> Recommendations { get; set; }
     }
 
-    public class ComponentHealth
-    {
-        public HealthStatus Database { get; set; }
-        public HealthStatus Cache { get; set; }
-        public HealthStatus Api { get; set; }
-        public HealthStatus Authentication { get; set; }
-        public HealthStatus Filesystem { get; set; }
-    }
-
-    public class HealthStatus
-    {
-        public string Status { get; set; }
-        public double ResponseTime { get; set; }
-        public double HitRate { get; set; }
-        public string LastValidation { get; set; }
-        public double AvailableSpace { get; set; }
-    }
-
+    
     public class ResourceStatus
     {
         public ResourceInfo Memory { get; set; }
