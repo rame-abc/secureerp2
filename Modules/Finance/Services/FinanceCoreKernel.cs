@@ -1251,9 +1251,8 @@ namespace SecureERP2.Modules.Finance.Services
     public enum HealthStatus
     {
         Healthy,
-        Warning,
-        Critical,
-        Error
+        Degraded,
+        Unhealthy
     }
 
     public enum KernelHealthStatus
