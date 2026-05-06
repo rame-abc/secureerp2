@@ -13,6 +13,7 @@ COPY . .
 WORKDIR "/src/."
 
 # Build only production output (skip unnecessary parts)
+RUN dotnet restore SecureERP2.csproj
 RUN dotnet publish SecureERP2.csproj -c Release -o /app/out
 
 FROM base AS final
