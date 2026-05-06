@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using System.Diagnostics;
 using System.Threading;
+using SecureERP2.Modules.Finance.Models;
 
 namespace SecureERP2.Modules.Finance.Services
 {
