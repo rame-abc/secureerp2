@@ -2,7 +2,24 @@ using System.ComponentModel.DataAnnotations;
 
 namespace SecureERP2.Modules.Finance
 {
+    // �️ Master Domain Contract - Reconciliation Base Pattern
+    public enum ReconciliationStatus
+    {
+        Pending,
+        Matched,
+        Mismatch,
+        Error
+    }
+
+    public class ReconciliationBase
+    {
+        public ReconciliationStatus Status { get; set; }
+        public decimal TotalDifference { get; set; }
+        public DateTime LastUpdated { get; set; }
+    }
+
     // 🏦 Finance Account (Chart of Accounts - inherits from BaseEntity for multi-tenant security)
+    // �🏦 Finance Account (Chart of Accounts - inherits from BaseEntity for multi-tenant security)
     public class FinanceAccount : BaseEntity
     {
         [Required]
@@ -155,6 +172,9 @@ namespace SecureERP2.Modules.Finance
         
         [Required]
         public int CreatedByUserId { get; set; }
+        
+        // Additional property for compatibility
+        public string CreatedBy { get; set; } = string.Empty;
         
         public int? ApprovedByUserId { get; set; }
         

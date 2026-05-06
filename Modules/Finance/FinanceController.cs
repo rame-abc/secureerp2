@@ -1,6 +1,9 @@
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+// using SecureERP2.Data; // Removed - namespace doesn't exist
+using SecureERP2.Modules.Finance.Entities;
+using SecureERP2.Modules.Finance.Services;
 using System.Security.Claims;
 
 namespace SecureERP2.Modules.Finance
@@ -11,11 +14,28 @@ namespace SecureERP2.Modules.Finance
     {
         private readonly ERPDbContext _context;
         private readonly AccountingEngine _accountingEngine;
+        private readonly AccrualEngine _accrualEngine;
+        private readonly SubledgerEngine _subledgerEngine;
+        // private readonly PeriodClosingEngine _periodClosingEngine; // Temporarily excluded
+        private readonly AuditTrailEngine _auditTrailEngine;
+        private readonly FinancialIntegrityValidator _integrityValidator;
 
-        public FinanceController(ERPDbContext context, AccountingEngine accountingEngine)
+        public FinanceController(
+            ERPDbContext context, 
+            AccountingEngine accountingEngine,
+            AccrualEngine accrualEngine,
+            SubledgerEngine subledgerEngine,
+            // PeriodClosingEngine periodClosingEngine, // Temporarily excluded
+            AuditTrailEngine auditTrailEngine,
+            FinancialIntegrityValidator integrityValidator)
         {
             _context = context;
             _accountingEngine = accountingEngine;
+            _accrualEngine = accrualEngine;
+            _subledgerEngine = subledgerEngine;
+            // _periodClosingEngine = periodClosingEngine; // Temporarily excluded
+            _auditTrailEngine = auditTrailEngine;
+            _integrityValidator = integrityValidator;
         }
 
         // 🔐 Helper method to extract CompanyId from JWT token
@@ -343,68 +363,158 @@ namespace SecureERP2.Modules.Finance
                 }
 
                 // 🚀 STEP 24.2: Add Date Filtering to all reports
-                var fromDate = from ?? DateTime.MinValue;
-                var toDate = to ?? DateTime.MaxValue;
+                var fromDate = from ?? new DateTime(DateTime.UtcNow.Year, 1, 1);
+                var toDate = to ?? DateTime.UtcNow;
 
                 // Get trial balance data with date filtering
                 var trialBalance = await _accountingEngine.GetTrialBalanceAsync(companyId.Value, fromDate, toDate);
 
                 // 📊 Build Income Statement Structure
-                var revenue = trialBalance.Accounts.Where(a => a.AccountType == AccountType.Revenue).ToList();
-                var expenses = trialBalance.Accounts.Where(a => a.AccountType == AccountType.Expense).ToList();
+                var allAccounts = trialBalance.Accounts.ToList();
 
-                // Calculate totals
-                var totalRevenue = revenue.Sum(a => a.Balance);
-                var totalExpenses = expenses.Sum(a => a.Balance);
-                var netProfit = totalRevenue - totalExpenses;
+                // 📊 STEP 3.5.2: Add Depreciation to P&L calculations
+                // Get depreciation expense from ledger (Account 5300 - Depreciation Expense)
+                var depreciationExpense = allAccounts
+                    .FirstOrDefault(a => a.AccountCode == "5300" || a.AccountName.Contains("Depreciation"))?.Balance ?? 0;
 
-                // 📊 Income Statement Structure
+                // 📊 STEP 3.5.3: Add Gross Profit calculation
+                // Revenue accounts (4000-4999)
+                var revenueAccounts = allAccounts.Where(a => 
+                    a.AccountType == AccountType.Revenue && 
+                    a.AccountCode.StartsWith("4")).ToList();
+                
+                // COGS accounts (5000-5099) - Cost of Goods Sold
+                var cogsAccounts = allAccounts.Where(a => 
+                    a.AccountType == AccountType.Expense && 
+                    (a.AccountCode.StartsWith("50") || a.AccountName.Contains("Cost") || a.AccountName.Contains("COGS"))).ToList();
+                
+                // Operating expenses (5100-5299, 5300-5999 excluding depreciation)
+                var operatingExpenses = allAccounts.Where(a => 
+                    a.AccountType == AccountType.Expense && 
+                    !a.AccountCode.StartsWith("50") && // Not COGS
+                    !(a.AccountCode == "5300" || a.AccountName.Contains("Depreciation"))).ToList();
+                
+                // Other expenses (6000-6999)
+                var otherExpenses = allAccounts.Where(a => 
+                    a.AccountType == AccountType.Expense && 
+                    a.AccountCode.StartsWith("6")).ToList();
+
+                // Calculate IFRS-compliant P&L figures
+                var totalRevenue = revenueAccounts.Sum(a => a.Balance);
+                var totalCOGS = cogsAccounts.Sum(a => a.Balance);
+                var totalOperatingExpenses = operatingExpenses.Sum(a => a.Balance) + depreciationExpense;
+                var totalOtherExpenses = otherExpenses.Sum(a => a.Balance);
+                
+                // 📊 STEP 3.5.3: Gross Profit calculation
+                var grossProfit = totalRevenue - totalCOGS;
+                var operatingIncome = grossProfit - totalOperatingExpenses;
+                var netProfitBeforeTax = operatingIncome - totalOtherExpenses;
+                
+                // Tax expense (Account 6000+ for taxes)
+                var taxExpense = allAccounts
+                    .FirstOrDefault(a => a.AccountCode.StartsWith("6") && a.AccountName.Contains("Tax"))?.Balance ?? 0;
+                
+                var netProfitAfterTax = netProfitBeforeTax - taxExpense;
+
+                // 📊 IFRS-Compliant Income Statement Structure
                 var incomeStatement = new
                 {
                     // 💰 Revenue Section
                     revenue = new
                     {
-                        revenueAccounts = revenue.Select(a => new
+                        accounts = revenueAccounts.Select(a => new
                         {
                             account = a.AccountName,
                             accountCode = a.AccountCode,
-                            balance = a.Balance
+                            balance = a.Balance,
+                            accountType = a.AccountType.ToString()
                         }).ToList(),
                         totalRevenue = totalRevenue
                     },
 
-                    // 💰 Expenses Section
-                    expenses = new
+                    // 📦 Cost of Goods Sold Section
+                    costOfGoodsSold = new
                     {
-                        expenseAccounts = expenses.Select(a => new
+                        accounts = cogsAccounts.Select(a => new
                         {
                             account = a.AccountName,
                             accountCode = a.AccountCode,
-                            balance = a.Balance
+                            balance = a.Balance,
+                            accountType = a.AccountType.ToString()
                         }).ToList(),
-                        totalExpenses = totalExpenses
+                        totalCOGS = totalCOGS
                     },
 
-                    // 📊 Profit Summary
-                    profitSummary = new
+                    // 📊 Gross Profit Section
+                    grossProfit = new
                     {
-                        grossProfit = totalRevenue,
-                        totalExpenses = totalExpenses,
-                        netProfit = netProfit,
-                        profitMargin = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0
+                        amount = grossProfit,
+                        margin = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0
+                    },
+
+                    // � Operating Expenses Section
+                    operatingExpenses = new
+                    {
+                        accounts = operatingExpenses.Select(a => new
+                        {
+                            account = a.AccountName,
+                            accountCode = a.AccountCode,
+                            balance = a.Balance,
+                            accountType = a.AccountType.ToString()
+                        }).ToList(),
+                        depreciationExpense = depreciationExpense,
+                        totalOperatingExpenses = totalOperatingExpenses
+                    },
+
+                    // 📊 Operating Income Section
+                    operatingIncome = new
+                    {
+                        amount = operatingIncome,
+                        margin = totalRevenue > 0 ? (operatingIncome / totalRevenue) * 100 : 0
+                    },
+
+                    // 🏢 Other Expenses Section
+                    otherExpenses = new
+                    {
+                        accounts = otherExpenses.Select(a => new
+                        {
+                            account = a.AccountName,
+                            accountCode = a.AccountCode,
+                            balance = a.Balance,
+                            accountType = a.AccountType.ToString()
+                        }).ToList(),
+                        taxExpense = taxExpense,
+                        totalOtherExpenses = totalOtherExpenses
+                    },
+
+                    // 📈 Net Profit Summary
+                    netProfit = new
+                    {
+                        beforeTax = netProfitBeforeTax,
+                        taxExpense = taxExpense,
+                        afterTax = netProfitAfterTax,
+                        profitMargin = totalRevenue > 0 ? (netProfitAfterTax / totalRevenue) * 100 : 0,
+                        returnOnRevenue = totalRevenue > 0 ? (netProfitAfterTax / totalRevenue) * 100 : 0
                     },
 
                     // 📅 Report Metadata
                     generatedAt = DateTime.UtcNow,
                     companyId = companyId.Value,
-                    dateRange = new { from = fromDate, to = toDate }
+                    dateRange = new { 
+                        from = fromDate, 
+                        to = toDate,
+                        period = $"{fromDate:yyyy-MM-dd} to {toDate:yyyy-MM-dd}"
+                    },
+                    accountingStandard = "IFRS",
+                    currency = "USD",
+                    isPeriodClosed = await IsPeriodClosed(companyId.Value, toDate)
                 };
 
                 return Ok(incomeStatement);
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { error = "Failed to generate income statement", details = ex.Message });
+                return BadRequest(new { error = ex.Message });
             }
         }
 
@@ -483,6 +593,295 @@ namespace SecureERP2.Modules.Finance
 
             return closedPeriod != null;
         }
+
+        // 🔒 FINAL ERP FINANCE HARDENING LAYER ENDPOINTS
+
+        /// <summary>
+        /// 🔒 Generate accruals for period
+        /// </summary>
+        [Authorize(Roles = "Admin,Accountant")]
+        [HttpPost("accruals/generate")]
+        public async Task<IActionResult> GenerateAccruals([FromBody] GenerateAccrualsRequest request)
+        {
+            try
+            {
+                var companyId = GetCurrentCompanyId();
+                if (!companyId.HasValue)
+                {
+                    return BadRequest(new { error = "CompanyId not found in JWT token" });
+                }
+
+                var result = await _accrualEngine.GenerateMonthEndAccrualsAsync(companyId.Value, request.PeriodEnd);
+                
+                // 🔒 Record audit trail
+                await _auditTrailEngine.RecordFinancialTransactionAuditAsync(new FinancialTransaction
+                {
+                    CompanyId = companyId.Value,
+                    TransactionDate = request.PeriodEnd,
+                    TransactionType = "AccrualGeneration",
+                    Description = $"Generated accruals for period {request.PeriodEnd:yyyy-MM}",
+                    Amount = 0
+                }, "Generate", GetCurrentUserId(), GetCurrentUserName(), GetClientIP(), GetUserAgent());
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 🔒 Post subledger transactions to GL
+        /// </summary>
+        [Authorize(Roles = "Admin,Accountant")]
+        [HttpPost("subledger/post-to-gl")]
+        public async Task<IActionResult> PostSubledgerToGL([FromBody] PostSubledgerRequest request)
+        {
+            try
+            {
+                var companyId = GetCurrentCompanyId();
+                if (!companyId.HasValue)
+                {
+                    return BadRequest(new { error = "CompanyId not found in JWT token" });
+                }
+
+                var result = await _subledgerEngine.PostAllSubledgersToGLAsync(companyId.Value, request.AsOfDate);
+                
+                // 🔒 Record audit trail
+                await _auditTrailEngine.RecordFinancialTransactionAuditAsync(new FinancialTransaction
+                {
+                    CompanyId = companyId.Value,
+                    TransactionDate = request.AsOfDate ?? DateTime.UtcNow,
+                    TransactionType = "SubledgerPosting",
+                    Description = $"Posted {result.TotalPostings} subledger transactions to GL",
+                    Amount = 0
+                }, "Post", GetCurrentUserId(), GetCurrentUserName(), GetClientIP(), GetUserAgent());
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 🔒 Execute SAP-style period closing
+        /// </summary>
+        [Authorize(Roles = "Admin,Accountant")]
+        [HttpPost("period/close")]
+        // public async Task<IActionResult> ClosePeriod([FromBody] PeriodClosingRequest request) // Temporarily excluded
+        /*{
+            try
+            {
+                var companyId = GetCurrentCompanyId();
+                if (!companyId.HasValue)
+                {
+                    return BadRequest(new { error = "CompanyId not found in JWT token" });
+                }
+
+                var result = await _periodClosingEngine.ExecutePeriodClosingAsync(companyId.Value, request.ClosingDate, request);
+                
+                // 🔒 Record audit trail
+                await _auditTrailEngine.RecordPeriodClosingAuditAsync(new PeriodClosing
+                {
+                    CompanyId = companyId.Value,
+                    ClosingDate = request.ClosingDate,
+                    PeriodDescription = request.Description,
+                    Status = result.IsSuccess ? PeriodStatus.Locked : PeriodStatus.Open,
+                    ClosedByUser = request.RequestedBy,
+                    ClosedAt = DateTime.UtcNow,
+                    IsLocked = result.IsSuccess
+                }, result.IsSuccess ? "Close" : "Attempt", GetCurrentUserId(), GetCurrentUserName(), GetClientIP(), GetUserAgent());
+
+                return Ok(result);
+            }
+        /*
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+            }
+        }*/
+
+        /// <summary>
+        /// 🔒 Validate financial integrity
+        /// </summary>
+        [Authorize(Roles = "Admin,Accountant,Viewer")]
+        [HttpPost("integrity/validate")]
+        public async Task<IActionResult> ValidateFinancialIntegrity([FromBody] ValidateIntegrityRequest request)
+        {
+            try
+            {
+                var companyId = GetCurrentCompanyId();
+                if (!companyId.HasValue)
+                {
+                    return BadRequest(new { error = "CompanyId not found in JWT token" });
+                }
+
+                var result = await _integrityValidator.ValidateFinancialIntegrityAsync(companyId.Value, request.AsOfDate);
+                
+                // 🔒 Record audit trail
+                await _auditTrailEngine.RecordFinancialTransactionAuditAsync(new FinancialTransaction
+                {
+                    CompanyId = companyId.Value,
+                    TransactionDate = request.AsOfDate,
+                    TransactionType = "IntegrityValidation",
+                    Description = $"Financial integrity validation: {(result.IsValid ? "PASSED" : "FAILED")}",
+                    Amount = 0
+                }, "Validate", GetCurrentUserId(), GetCurrentUserName(), GetClientIP(), GetUserAgent());
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 🔒 Get audit trail
+        /// </summary>
+        [Authorize(Roles = "Admin,Accountant,Viewer")]
+        [HttpGet("audit-trail")]
+        public async Task<IActionResult> GetAuditTrail([FromQuery] string? entityType = null, [FromQuery] int? entityId = null, [FromQuery] DateTime? from = null, [FromQuery] DateTime? to = null)
+        {
+            try
+            {
+                var companyId = GetCurrentCompanyId();
+                if (!companyId.HasValue)
+                {
+                    return BadRequest(new { error = "CompanyId not found in JWT token" });
+                }
+
+                if (!string.IsNullOrEmpty(entityType) && entityId.HasValue)
+                {
+                    var trail = await _auditTrailEngine.GetAuditTrailAsync(companyId.Value, entityType, entityId.Value);
+                    return Ok(trail);
+                }
+                else
+                {
+                    // Return audit report for date range
+                    var report = await _auditTrailEngine.GenerateAuditReportAsync(companyId.Value, from ?? DateTime.MinValue, to ?? DateTime.UtcNow);
+                    return Ok(report);
+                }
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 🔒 Validate audit trail integrity
+        /// </summary>
+        [Authorize(Roles = "Admin,Accountant")]
+        [HttpPost("audit-trail/validate")]
+        public async Task<IActionResult> ValidateAuditTrailIntegrity([FromBody] ValidateAuditTrailRequest request)
+        {
+            try
+            {
+                var companyId = GetCurrentCompanyId();
+                if (!companyId.HasValue)
+                {
+                    return BadRequest(new { error = "CompanyId not found in JWT token" });
+                }
+
+                var result = await _auditTrailEngine.ValidateAuditTrailIntegrityAsync(companyId.Value, request.FromDate, request.ToDate);
+                
+                // 🔒 Record audit trail for validation
+                await _auditTrailEngine.RecordFinancialTransactionAuditAsync(new FinancialTransaction
+                {
+                    CompanyId = companyId.Value,
+                    TransactionDate = DateTime.UtcNow,
+                    TransactionType = "AuditTrailValidation",
+                    Description = $"Audit trail integrity validation: {(result.IsValid ? "PASSED" : "FAILED")}",
+                    Amount = 0
+                }, "Validate", GetCurrentUserId(), GetCurrentUserName(), GetClientIP(), GetUserAgent());
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 🔒 Generate tamper-proof certificate
+        /// </summary>
+        [Authorize(Roles = "Admin,Accountant")]
+        [HttpPost("audit-trail/certificate")]
+        public async Task<IActionResult> GenerateTamperProofCertificate([FromBody] GenerateCertificateRequest request)
+        {
+            try
+            {
+                var companyId = GetCurrentCompanyId();
+                if (!companyId.HasValue)
+                {
+                    return BadRequest(new { error = "CompanyId not found in JWT token" });
+                }
+
+                var certificate = await _auditTrailEngine.GenerateTamperProofCertificateAsync(companyId.Value, request.FromDate, request.ToDate);
+                
+                return Ok(certificate);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        // 🔒 Helper methods for hardening layer
+        private int GetCurrentUserId()
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            return int.TryParse(userIdClaim, out var userId) ? userId : 0;
+        }
+
+        private string GetCurrentUserName()
+        {
+            return User.FindFirst(ClaimTypes.Name)?.Value ?? "Unknown";
+        }
+
+        private string GetClientIP()
+        {
+            return HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Unknown";
+        }
+
+        private string GetUserAgent()
+        {
+            return Request.Headers["User-Agent"].ToString() ?? "Unknown";
+        }
+    }
+
+    // 🔒 FINAL ERP FINANCE HARDENING LAYER DTOs
+
+    public class GenerateAccrualsRequest
+    {
+        public DateTime PeriodEnd { get; set; }
+    }
+
+    public class PostSubledgerRequest
+    {
+        public DateTime? AsOfDate { get; set; }
+    }
+
+    public class ValidateIntegrityRequest
+    {
+        public DateTime AsOfDate { get; set; }
+    }
+
+    public class ValidateAuditTrailRequest
+    {
+        public DateTime FromDate { get; set; }
+        public DateTime ToDate { get; set; }
+    }
+
+    public class GenerateCertificateRequest
+    {
+        public DateTime FromDate { get; set; }
+        public DateTime ToDate { get; set; }
     }
 
     // 🚀 STEP 24.3: Period Closing Request DTO

@@ -47,7 +47,7 @@ namespace SecureERP2
         }
 
         // 🔒 CRITICAL: Secure raw SQL execution with automatic CompanyId injection
-        public int ExecuteSecureSqlRaw(string sql, params object[] parameters)
+        public new int ExecuteSecureSqlRaw(string sql, params object[] parameters)
         {
             // Check if SQL contains potential multi-tenant bypass
             if (sql.Contains("IgnoreQueryFilters", StringComparison.OrdinalIgnoreCase))
@@ -60,7 +60,7 @@ namespace SecureERP2
             return base.Database.ExecuteSqlRaw(secureSql, parameters);
         }
 
-        public int ExecuteSecureSqlInterpolated(FormattableString sql)
+        public new int ExecuteSecureSqlInterpolated(FormattableString sql)
         {
             var sqlString = sql.Format;
             

@@ -304,11 +304,21 @@ namespace SecureERP2.Modules.Finance
     // 📊 Trial Balance Account
     public class TrialBalanceAccount
     {
+        public int AccountId { get; set; }
+        public int CompanyId { get; set; }
         public string AccountCode { get; set; } = string.Empty;
         public string AccountName { get; set; } = string.Empty;
         public AccountType AccountType { get; set; }
         public AccountCategory AccountCategory { get; set; }
         public AccountNormalBalance NormalBalance { get; set; }
         public decimal Balance { get; set; }
+        public decimal DebitBalance { get; set; }
+        public decimal CreditBalance { get; set; }
+        public decimal Debit { get; set; }
+        public decimal Credit { get; set; }
+        public DateTime TransactionDate { get; set; }
+        public bool IsActive { get; set; } = true;
+        public int? ParentAccountId { get; set; }
+        public int HierarchyLevel { get; set; }
     }
 }

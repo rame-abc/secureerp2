@@ -3,13 +3,16 @@ import { Form, Input, Button, Card, message } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import axios from 'axios';
 
+// 🚀 STEP 26.6: Configure API URL for cloud deployment
+const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+
 const Login = ({ onLogin }) => {
   const [loading, setLoading] = useState(false);
 
   const onFinish = async (values) => {
     setLoading(true);
     try {
-      const response = await axios.post('/api/auth/login', {
+      const response = await axios.post(`${API}/api/auth/login`, {
         email: values.email,
         password: values.password
       });

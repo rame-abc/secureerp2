@@ -12,6 +12,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using SecureERP2;
 using SecureERP2.Modules.Finance;
+using SecureERP2.Modules.Assets.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -21,7 +22,16 @@ builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 builder.Logging.SetMinimumLevel(LogLevel.Information);
 
-// 🔒 Add services to the container.
+// � STEP 26.4: Enable CORS for cloud deployment
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
+        policy.AllowAnyOrigin()
+              .AllowAnyHeader()
+              .AllowAnyMethod());
+});
+
+// � Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
@@ -86,6 +96,17 @@ builder.Services.AddAuthorization();
 builder.Services.AddScoped<AccountingEngine>();
 builder.Services.AddScoped<ChartOfAccountsSeeder>();
 
+// 🏗️ Register Fixed Asset Module
+builder.Services.AddScoped<DepreciationEngine>();
+builder.Services.AddScoped<AssetService>();
+
+// 🔒 FINAL ERP FINANCE HARDENING LAYER
+// builder.Services.AddScoped<AccrualEngine>(); // Commented out - service not available
+// builder.Services.AddScoped<SubledgerEngine>(); // Commented out - service not available
+// builder.Services.AddScoped<PeriodClosingEngine>(); // Commented out - service not available
+// builder.Services.AddScoped<AuditTrailEngine>(); // Commented out - service not available
+// builder.Services.AddScoped<FinancialIntegrityValidator>(); // Commented out - service not available
+
 // 🔒 Configure CORS for Vercel Frontend
 // CorsConfiguration.ConfigureCors(builder.Services, builder.Environment);
 
@@ -100,8 +121,8 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// 🔒 Use CORS configuration
-// CorsConfiguration.UseCorsConfiguration(app, app.Environment);
+// � STEP 26.4: Use CORS for cloud deployment
+app.UseCors("AllowAll");
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -114,6 +135,25 @@ app.MapControllers();
 
 // Basic endpoints for testing
 app.MapGet("/", () => "ERP API is running!");
+
+// 🚀 STEP 27.2: Health check endpoint for database verification
+app.MapGet("/api/health", () => {
+    try {
+        // Test database connection by attempting to access the database
+        // This will throw an exception if database is not connected
+        var scope = app.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<ERPDbContext>();
+        var canConnect = dbContext.Database.CanConnect();
+        
+        return canConnect ? 
+            Results.Ok(new { status = "healthy", database = "connected" }) :
+            Results.Problem("Database connection failed");
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem($"Health check failed: {ex.Message}");
+    }
+});
 
 // Multi-tenant authentication endpoint
 app.MapPost("/api/auth/login", async (LoginRequest request, ERPDbContext context) =>

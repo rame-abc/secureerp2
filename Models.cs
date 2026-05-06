@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
 using SecureERP2.Modules.Finance;
+using SecureERP2.Modules.Assets.Entities;
 
 namespace SecureERP2
 {
@@ -9,8 +10,13 @@ namespace SecureERP2
     {
         public int Id { get; set; }
         public int CompanyId { get; set; }
-        public DateTime CreatedAt { get; set; }
-        public DateTime UpdatedAt { get; set; }
+
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime? UpdatedAt { get; set; }
+        public DateTime? ProcessedAt { get; set; }
+
+        public bool IsDeleted { get; set; } = false;
+        public bool IsLocked { get; set; } = false;
     }
 
     // Company model (inherits from BaseEntity for multi-tenant consistency)
@@ -259,6 +265,44 @@ namespace SecureERP2
         public DbSet<Transaction> Transactions { get; set; }
         public DbSet<LedgerEntry> LedgerEntries { get; set; }
         public DbSet<PeriodClosing> PeriodClosings { get; set; }
+        public DbSet<SecureERP2.Modules.Finance.Services.AccrualEntry> AccrualEntries { get; set; }
+
+        // Invoice management
+        public DbSet<SecureERP2.Modules.Invoice.Entities.Invoice> Invoices { get; set; }
+        public DbSet<SecureERP2.Modules.Invoice.Entities.InvoiceItem> InvoiceItems { get; set; }
+
+        // Payroll management
+        public DbSet<SecureERP2.Modules.Payroll.Entities.Employee> Employees { get; set; }
+        public DbSet<SecureERP2.Modules.Payroll.Entities.Salary> Salaries { get; set; }
+        public DbSet<SecureERP2.Modules.Payroll.Entities.PayrollRun> PayrollRuns { get; set; }
+
+        // Tax management
+        public DbSet<SecureERP2.Modules.Tax.Entities.TaxRule> TaxRules { get; set; }
+        public DbSet<SecureERP2.Modules.Tax.Entities.TaxCalculation> TaxCalculations { get; set; }
+        public DbSet<SecureERP2.Modules.Tax.Entities.TaxReport> TaxReports { get; set; }
+
+        // 🔒 FINAL ERP FINANCE HARDENING LAYER
+        // Added missing entities for compilation
+        public DbSet<SecureERP2.Modules.Finance.Entities.AuditTrail> AuditTrails { get; set; }
+        public DbSet<SecureERP2.Modules.Finance.Services.IdempotencyOperation> IdempotencyOperations { get; set; }
+        public DbSet<SecureERP2.Modules.Finance.Services.ConcurrencyLock> ConcurrencyLocks { get; set; }
+        public DbSet<SecureERP2.Modules.Finance.Entities.AuditSnapshot> AuditSnapshots { get; set; }
+        public DbSet<SecureERP2.Modules.Finance.Entities.FinancialTime> FinancialTimes { get; set; }
+        public DbSet<SecureERP2.Modules.Finance.Entities.Approval> Approvals { get; set; }
+        public DbSet<SecureERP2.Modules.Finance.Entities.FinancialTransaction> FinanceTransactions { get; set; }
+        
+        // 🔥 REAL ENTERPRISE AUDIT SYSTEM - Required DbSets
+        public DbSet<SecureERP2.Modules.Finance.Entities.JournalEntry> JournalEntries { get; set; }
+        public DbSet<SecureERP2.Modules.Finance.Entities.JournalLine> JournalLines { get; set; }
+        
+        // 🔥 REAL ENTERPRISE AUDIT SYSTEM - Additional Required DbSets
+        public DbSet<SecureERP2.Modules.Finance.Entities.IdempotencyKey> IdempotencyKeys { get; set; }
+        public DbSet<SecureERP2.Modules.Finance.Services.IdempotencyRecord> IdempotencyRecords { get; set; }
+        // public DbSet<FinancialTransaction> FinancialTransactions { get; set; }
+        
+        // Additional properties for compatibility
+        public DbSet<SecureERP2.Modules.Finance.Entities.EventProjection> EventProjections { get; set; }
+        // FinanceJournals DbSet removed - FinanceJournal class doesn't exist
 
         // Product and inventory management
         public DbSet<Product> Products { get; set; }
@@ -271,6 +315,10 @@ namespace SecureERP2
         // Analytics and audit
         public DbSet<AnalyticsSummary> AnalyticsSummaries { get; set; }
         public DbSet<AuditLog> AuditLogs { get; set; }
+
+        // Fixed Assets module
+        public DbSet<FixedAsset> FixedAssets { get; set; }
+        public DbSet<DepreciationSchedule> DepreciationSchedules { get; set; }
 
         protected override void OnModelCreating(Microsoft.EntityFrameworkCore.ModelBuilder modelBuilder)
         {
@@ -504,6 +552,8 @@ namespace SecureERP2
                 modelBuilder.Entity<OrderItem>().HasQueryFilter(e => e.CompanyId == companyId);
                 modelBuilder.Entity<AnalyticsSummary>().HasQueryFilter(e => e.CompanyId == companyId);
                 modelBuilder.Entity<AuditLog>().HasQueryFilter(e => e.CompanyId == companyId);
+                modelBuilder.Entity<FixedAsset>().HasQueryFilter(e => e.CompanyId == companyId);
+                modelBuilder.Entity<DepreciationSchedule>().HasQueryFilter(e => e.CompanyId == companyId);
             }
             
             // Note: Company entity is not filtered by CompanyId (it's the root entity)

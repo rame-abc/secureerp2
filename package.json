@@ -1,0 +1,16 @@
+{
+  "name": "erp-live-verification",
+  "version": "1.0.0",
+  "description": "Live verification script for SaaS ERP system",
+  "main": "test-live-system.js",
+  "scripts": {
+    "test": "node test-live-system.js",
+    "verify": "node test-live-system.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "keywords": ["erp", "saas", "verification", "testing"],
+  "author": "ERP System",
+  "license": "MIT"
+}
